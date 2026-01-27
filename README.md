@@ -5,6 +5,23 @@ Jacobian calculations and the Hutchinson estimator.
 
 ![Flow Perturbation](./figures/ODE_pf.png "Title")
 
+# Flow Perturbation++ (FP++)
+
+![FP++ Overview](figures/Figure3.png)
+
+Flow Perturbation++ (FP++) is a **variance-reduced extension of Flow Perturbation** for unbiased Boltzmann sampling with continuous normalizing flows (CNFs).  
+High-dimensional CNFs are limited by the computational cost of Jacobian-determinant evaluation, which requires \(D\) backpropagation passes through the flow layers. Existing stochastic Jacobian estimators, such as the Hutchinson trace estimator, reduce computation but introduce bias. FP++ discretizes the probability-flow ODE and performs **unbiased stepwise Jacobian estimation**, retaining unbiasedness while substantially reducing estimator variance.
+
+---
+
+## Features
+
+- **Unbiased stepwise Jacobian estimation** via multi-step flow decomposition  
+- **Variance reduction** compared with single-step Flow Perturbation  
+- **Seamless integration** with SMC-based CNF sampling pipelines  
+- Benchmarked on high-dimensional synthetic and molecular systems 
+
+
 ***
 # Dependencies
 * Mandatory
