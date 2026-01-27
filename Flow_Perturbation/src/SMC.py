@@ -120,7 +120,8 @@ def find_closest_larger_element_desc(sequence, b):
     return closest_value.item(), closest_index
     
 
-def mc_step(xT, eps, log_omega, x0, ux, K_x, K_eps,get_log_omega, beta=1.0, tmax=1.0, nmc=2,if_K_eps=True,if_com = False,n_particles = 1, n_dimensions = 1):
+def mc_step(xT, eps, log_omega, x0, ux, K_x, K_eps,get_log_omega, beta=1.0, tmax=1.0, nmc=2,if_K_eps=True,if_com = False,n_particles = 1,
+             n_dimensions = 1,device="cuda",eps_type="Rademacher"):
     """
     Perform a single Monte Carlo (MC) step on the given parameters.
 
@@ -145,46 +146,72 @@ def mc_step(xT, eps, log_omega, x0, ux, K_x, K_eps,get_log_omega, beta=1.0, tmax
         torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor, float:
         Updated xT, eps, log_omega, x0, ux, and acceptance rate.
     """
-    accept_rate = 0.0
+    accept_rate = torch.tensor(0.0).to(device)
 
     for j in range(nmc):
         # Clone current values to preserve the original ones
         xT_new = xT.clone()
-        eps_new = eps.clone()
-        
-        # Modify samples using modify_samples_torch_batched_K
+        eps_new = eps.clone() 
+
         modify_samples_torch_batched_K(xT_new, mean=0.0, std=tmax, K=K_x)
-        if if_K_eps:
-            modify_samples_torch_batched_K(eps_new, mean=0.0, std=1.0, K=K_eps)
+        if if_K_eps and eps is not None:
+            modify_samples_torch_batched_K(eps_new, mean=0.0, std=1.0, K=K_eps,eps_type=eps_type)
         if if_com:
             xT_new = remove_mean(xT_new, n_particles, n_dimensions)
+        if if_com and eps_type == 'Gaussian':
             eps_new = remove_mean(eps_new, n_particles, n_dimensions)
-        # Compute log-omega, x0, and ux using the new values
+
+    
         log_omega_new, x0_new, ux_new = get_log_omega(xT_new, eps_new)
+        #print(xT_new.shape,xT.shape,log_omega_new.shape)
+        db_factor = torch.exp(beta*(log_omega_new - log_omega)) # detailed balance move factor, now scaled by beta
         
-        # Detailed balance move factor, scaled by beta
-        db_factor = torch.exp(beta * (log_omega_new - log_omega))  # move factor
-        
-        # Random probabilities for the acceptance step
-        p = torch.rand(db_factor.shape[0]).to(xT.device)
+        p = torch.rand(db_factor.shape[0]).to(device)
     
-        # Determine which samples will be moved
-        index_move = p < db_factor  # The index to be moved
+        index_move = p < db_factor # the index to be moved
     
-        # Update the values for the samples that are accepted
         xT[index_move] = xT_new[index_move]
-        if len(eps_new.shape) == 3:
-            eps[:,index_move] = eps_new[:,index_move]
-        else:
-            eps[index_move] = eps_new[index_move]
+        eps[..., index_move, :] = eps_new[..., index_move, :]
         log_omega[index_move] = log_omega_new[index_move]
         x0[index_move] = x0_new[index_move]
         ux[index_move] = ux_new[index_move]
 
-        # Compute the acceptance rate
-        accept_rate += torch.mean(index_move.float()) / nmc
+        accept_rate += torch.mean(index_move.float())/nmc
 
     return xT, eps, log_omega, x0, ux, accept_rate
+
+import torch
+
+def resample_eps_fast(eps: torch.Tensor, resampled_indices: torch.Tensor, n_replicas: int) -> torch.Tensor:
+    """
+    Rearrange the n_replicas dimension of eps. Supports 2D, 3D, or 4D tensors efficiently.
+    
+    Args:
+        eps: Input tensor, possible shapes:
+             (n_replicas, ndim)
+             (M, n_replicas, ndim)
+             (T, n_replicas, ndim)
+             (T, method, n_replicas, ndim)
+        resampled_indices: Indices used for rearranging, torch.LongTensor
+        n_replicas: Number of replicas (integer)
+
+    Returns:
+        eps tensor with the n_replicas dimension rearranged, shape unchanged
+    """
+    # Find the dimension corresponding to n_replicas
+    replica_dim_candidates = [i for i, s in enumerate(eps.shape) if s == n_replicas]
+    
+    if len(replica_dim_candidates) == 0:
+        raise ValueError(f"Cannot find any dimension equal to n_replicas ({n_replicas}) in eps.shape={eps.shape}")
+    
+    # Choose the first matching dimension
+    replica_dim = replica_dim_candidates[0]
+    
+    # Rearrange along the n_replicas dimension using index_select
+    eps = eps.index_select(replica_dim, resampled_indices)
+    return eps
+
+
 
 def resample_if_needed(ess, n_replicas, i, n_steps, xT, eps, log_omega, x0, ux, ansestors, total_logweight, weights,ess_threshold=0.95,resample_method=systematic_resampling):
     """
@@ -213,19 +240,17 @@ def resample_if_needed(ess, n_replicas, i, n_steps, xT, eps, log_omega, x0, ux, 
         # Resample the particles
         resampled_indices = resample_method(weights.cpu().numpy())  # Get resampled indices
         xT = xT[resampled_indices]  # Get the resampled xT, eps, log_omega, x0, and ux
-        if len(eps.shape) == 3:
-            eps = eps[:, resampled_indices]
-        else:
-            eps = eps[resampled_indices]
+        eps = resample_eps_fast(eps, torch.tensor(resampled_indices, device=eps.device), n_replicas)
         log_omega = log_omega[resampled_indices]
         x0 = x0[resampled_indices]
         ux = ux[resampled_indices]
         ansestors = ansestors[resampled_indices]
         print("Step ", i, " - Resampling performed")
 
-        total_logweight = torch.zeros_like(log_omega)  # Reassign total_logweight to zero
+        total_logweight = torch.zeros_like(log_omega) # reassign total_logweight to zero
+        weights = torch.softmax(total_logweight, dim=0)  # get the normalized weights
+        ess = 1 / torch.sum(weights**2) # get the effective sample size. here it will be reset to N
         unique_elements, counts = torch.unique(ansestors, return_counts=True)
-        
         print("Number of unique elements:", unique_elements.shape)
 
 

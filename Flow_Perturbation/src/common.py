@@ -9,13 +9,13 @@ class LangevinDynamicsWithLogP(torch.nn.Module):
         self.beta = beta  # Inverse temperature, typically set to 1 for simplicity
         self.potential_fn = potential_fn  # Potential energy function u_lambda(y), which is used to compute the gradients
         
-    def forward(self, y):
+    def forward(self, y, eps=None):
         # Compute the gradient of the potential energy function with respect to y
         grad_u = self.potential_fn(y)
         
         # Generate forward noise η_t ~ N(0, I), where the noise is drawn from a normal distribution
         # The shape of the noise is the same as y
-        noise_forward = torch.randn_like(y)  # Noise with the same shape as y
+        noise_forward = torch.randn_like(y) if eps is None else eps
         # Update y based on Langevin dynamics: y_next = y - ϵ_t * grad_u + sqrt(2 * ϵ_t / β) * η_t
         y_next = y - self.eta * grad_u + np.sqrt(2 * self.eta / self.beta) * noise_forward
         

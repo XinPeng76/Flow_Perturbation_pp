@@ -40,7 +40,7 @@ class RK2_dSt():
         k1, div_k1 = func(t, y, eps)
         k2, div_k2 = func(t + dt / 2.0, y + 1.0 / 2.0 * dt * k1, eps)
         out = y + dt * k2
-        div_out = div_k2 * dt
+        div_out = div_k2*dt
         return out, div_out
     
 class RK4_dSt():

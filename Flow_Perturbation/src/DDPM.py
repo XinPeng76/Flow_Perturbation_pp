@@ -2,7 +2,8 @@ import torch
 import numpy as np
 from scipy.interpolate import CubicSpline
 import torch.nn.functional as F
-from .odesolver import odesolver,odesolver_Huch_dSt
+from .odesolver import odesolver,odesolver_Huch_dSt,odesolver_FP_dSt, odesolver_FP_dSt_vjp, odesolver_FP_dSt_jvp
+from .utils import remove_mean
 
 def calc_alphas_betas(num_steps=1000, scaling=10, beta_min=1e-5, beta_max=1e-2):
     '''
@@ -113,10 +114,26 @@ def diffusion_loss_fn_v_prediction(model, x_0, alphas_bar_sqrt, one_minus_alphas
     
     # Predict the velocity for the noisy data at the selected timesteps.
     t = t.to(device)
+    #print(x.shape, t.shape)
     v_pred = model(x, t.squeeze(-1))
     
     # Calculate the mean squared error loss.
     return (v - v_pred).square().mean()
+
+def FlowMatching_loss(model, x, noise_offset=0.3, device='cuda'):
+    batch_size, _ = x.shape
+    z = torch.randn_like(x).to(device)
+    if noise_offset != 0.0:
+        offset = torch.randn(x.shape[0], 1, device=device) * noise_offset
+        z = z + offset
+    t = torch.rand(batch_size, 1).to(device)
+    x_t = t*x + (1-t) * z
+    #print(x_t.shape, t.shape)
+    true_velocity = (x - z) 
+    pred_velocity = model(x_t, t.squeeze(-1))
+    return (true_velocity - pred_velocity).square().mean()
+
+
 
 def interpolate_parameters(num_steps, alphas_prod,alphas_bar_sqrt, one_minus_alphas_bar_sqrt):
     '''
@@ -216,18 +233,21 @@ class DDPMSamplerCoM:
             xt = remove_mean(xt, self.n_particles, self.n_dimensions)
         return xt
     
-    def exact_dynamics_dSt(self, xT, timesteps, method = 'RK4',nnoise = 1, eps_type='uniform'):
+    def exact_dynamics_dSt(self, xT, timesteps, method = 'RK4',nnoise = 1, eps_type='Gaussian', if_fp = False):
         xt = remove_mean(xT, self.n_particles, self.n_dimensions)
         dSt = torch.zeros(xt.shape[0]).to(self.device)
         if nnoise >= 1:
             fun = lambda t, x: self.score_function_rearange(t, x)
         else:
             fun = lambda x, t: self.score_function_1element(x, t)
-            
+        #eps = torch.randn_like(xt)
         for i in range(len(timesteps)-1):
             t = timesteps[i]
             tnext = timesteps[i+1]
-            xt ,div_xt = odesolver_Huch_dSt(fun, xt, t, tnext, method, nnoise, eps_type)
+            if if_fp:
+                xt ,div_xt = odesolver_FP_dSt(fun, xt, t, tnext , method, eps=None, back_coeff=0.001)
+            else:
+                xt ,div_xt = odesolver_Huch_dSt(fun, xt, t, tnext, method, nnoise, eps_type)
             dSt += div_xt
             xt = remove_mean(xt, self.n_particles, self.n_dimensions)
         return xt, dSt
@@ -296,18 +316,31 @@ class DDPMSampler:
             xt = odesolver(self.score_function_rearange, xt, t, tnext, method)
         return xt
     
-    def exact_dynamics_dSt(self, xT, timesteps, method = 'RK4',nnoise = 1, eps_type='Rademacher'): 
+    def exact_dynamics_dSt(self, xT, timesteps, method = 'RK4',nnoise = 1, if_fp = False,eps=None,eps_type = 'Gaussian', impl='finite'):
         xt = xT
         dSt = torch.zeros(xt.shape[0]).to(self.device)
-        if nnoise >= 1:
+        if nnoise >= 1 or if_fp:
             fun = lambda t, x: self.score_function_rearange(t, x)
         else:
             fun = lambda x, t: self.score_function_1element(x, t)
-            
+        #eps = torch.randn_like(xt)
         for i in range(len(timesteps)-1):
+            eps_i = eps[i] if eps is not None else None
+            #print(eps_i)
+            #eps_i = None
             t = timesteps[i]
             tnext = timesteps[i+1]
-            xt ,div_xt = odesolver_Huch_dSt(fun, xt, t, tnext, method, nnoise, eps_type)
+            if if_fp:
+                if impl == 'jvp':
+                    xt, div_xt = odesolver_FP_dSt_jvp(fun, xt, t, tnext, method, eps=eps_i)
+                elif impl == 'vjp':
+                    xt, div_xt = odesolver_FP_dSt_vjp(fun, xt, t, tnext, method, eps=eps_i)
+                elif impl == 'finite':
+                    xt ,div_xt = odesolver_FP_dSt(fun, xt, t, tnext, method, eps=eps_i, back_coeff=0.001)
+                else:
+                    raise ValueError("Invalid fp_impl")
+            else:
+                xt ,div_xt = odesolver_Huch_dSt(fun, xt, t, tnext, method, eps=eps_i, nnoise=nnoise, eps_type=eps_type, hutch_type=impl)
             dSt += div_xt
         return xt, dSt
 

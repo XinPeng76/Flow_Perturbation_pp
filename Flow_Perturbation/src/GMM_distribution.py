@@ -96,60 +96,47 @@ def get_energy_device(x, mvn_list, Nwellinfo):
 
 def log_prob_grad(x, mu, cov_matrix):
     """
-    Manually compute the gradient of the log-probability
-    of a multivariate normal distribution.
-
-    Parameters:
-    x : torch.Tensor
-        Samples of shape (N, D), where N is the number of samples
-        and D is the dimensionality.
-    mu : torch.Tensor
-        Mean vector of shape (D,).
-    cov_matrix : torch.Tensor
-        Covariance matrix of shape (D, D).
-
-    Returns:
-    grad : torch.Tensor
-        Gradient of the log-probability with respect to x,
-        with shape (N, D).
+    手动计算多元正态分布对数概率的梯度
+    参数:
+    x : torch.Tensor - 形状为 (N, D) 的样本点，N 是样本数，D 是维度数
+    mu : torch.Tensor - 形状为 (D,) 的均值
+    cov_matrix : torch.Tensor - 形状为 (D, D) 的协方差矩阵
+    
+    返回:
+    grad : torch.Tensor - 形状为 (N, D) 的梯度
     """
-    # Compute the inverse of the covariance matrix
+    # 计算协方差矩阵的逆
     cov_inv = torch.inverse(cov_matrix)
     
-    # Compute x - mu
+    # 计算 x - mu
     diff = x - mu
     
-    # Compute the gradient
+    # 计算梯度
     grad = torch.matmul(diff, cov_inv)
     
     return grad
 
-
 def get_energy_gradient_device(x, mvn_list, Nwellinfo):
-    # Unpack well information
     mus = Nwellinfo[0]
     sigmas = Nwellinfo[1]
     coeffs = Nwellinfo[2]
     
-    # Compute log-probabilities (log p(x)) for each Gaussian component
+    # 计算每个分布的 log_prob 和 logpx
     logpx = torch.zeros(len(mvn_list), x.shape[0], device=x.device)
     for i in range(len(mvn_list)):
         logpx[i] = mvn_list[i].log_prob(x) + torch.log(coeffs[i])
     
-    # Compute the maximum log-probability across components (for numerical stability)
+    # 计算 logpx_max
     logpx_max, _ = torch.max(logpx, dim=0)
     
-    # Compute logpx - logpx_max
+    # 计算 logpx - logpx_max
     delta_logpx = logpx - logpx_max
     
-    # Log-sum-exp to obtain the mixture log-probability
     logpx_max += torch.log(torch.sum(torch.exp(delta_logpx), dim=0))
 
-    # Compute the gradient of the energy (negative log-probability)
+    # 计算梯度
     grad = torch.zeros_like(x)
     for i in range(len(mvn_list)):
         mvn_grad = log_prob_grad(x, mus[i], sigmas[i])
         grad += torch.exp(logpx[i] - logpx_max).unsqueeze(-1) * mvn_grad
-
     return grad
-

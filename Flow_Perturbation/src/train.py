@@ -3,7 +3,7 @@ import torch
 import numpy as np
 import os
 from .EDM import loss_EDM
-from .DDPM import diffusion_loss_fn,diffusion_loss_fn_v_prediction
+from .DDPM import diffusion_loss_fn,diffusion_loss_fn_v_prediction,FlowMatching_loss
 from scipy.spatial.transform import Rotation as R
 from torch.utils.data import Dataset
 class CustomDataset(Dataset):
@@ -46,7 +46,7 @@ def train_model_EDM(model, device, ndim, sig_data, dataloader, path,num_epoch=81
     return model
 
 def train_model_DDPM(model, ndim, dataloader, path, alphas_bar_sqrt, one_minus_alphas_bar_sqrt, 
-                     num_steps,num_epoch=81,lr=1e-3, loss_DDPM = diffusion_loss_fn,decay_steps = 20,noise_offset=0.0,opt = torch.optim.Adam,logger=None):
+                     num_steps,num_epoch=81,lr=1e-3, loss_DDPM = diffusion_loss_fn,decay_steps = 20,noise_offset=0.0,opt = torch.optim.Adam,logger=None,device='cuda'):
     if not os.path.exists(path):
         os.makedirs(path)
     print('Training model...')
@@ -57,7 +57,7 @@ def train_model_DDPM(model, ndim, dataloader, path, alphas_bar_sqrt, one_minus_a
         loss_list = []
 
         for idx,batch_x in enumerate(dataloader):
-            batch_x = batch_x
+            batch_x = batch_x.to(device)
             loss = loss_DDPM(model, batch_x, alphas_bar_sqrt, one_minus_alphas_bar_sqrt, num_steps,noise_offset=noise_offset)
             optimizer.zero_grad()
             loss.backward()
@@ -75,6 +75,43 @@ def train_model_DDPM(model, ndim, dataloader, path, alphas_bar_sqrt, one_minus_a
     torch.save(model.state_dict(), f'{path}/model.pth')
     
     return model
+
+def train_model_FM(model, ndim, dataloader, path,num_epoch=81,lr=1e-3, loss_FM = FlowMatching_loss,decay_steps = 20,noise_offset=0.0,opt = torch.optim.Adam,logger=None,device='cuda'):
+    if not os.path.exists(path):
+        os.makedirs(path)
+    seed = 1234
+    print('Training model...')
+    optimizer = opt(model.parameters(),lr=lr)
+    
+    for t in range(num_epoch):
+        loss_list = []
+
+        for batch_x in dataloader:
+            batch_x = batch_x.to(device)
+            loss = loss_FM(model, batch_x, noise_offset=noise_offset)
+            optimizer.zero_grad()
+            # loss需要有requires_grad=True
+            if not loss.requires_grad:
+                loss = loss.clone().detach().requires_grad_()
+            loss.backward()
+            #torch.nn.utils.clip_grad_norm_(model.parameters(), 1.)	
+            optimizer.step()
+            loss_list.append(loss.item())
+
+        if(t%decay_steps==0):
+            for param_group in optimizer.param_groups:
+                param_group['lr'] *= 0.5
+                param_group['lr'] = max(param_group['lr'], 1e-5)
+            logger.info(f"Epoch {t}: Loss: {np.mean(loss_list)}")
+            logger.info(f"Learning rate: {param_group['lr']}")
+            torch.save(model.state_dict(), f'{path}/model_{t//100}.pth')
+    logger.info(f"Final Loss: {np.mean(loss_list)}")
+    torch.save(model.state_dict(), f'{path}/model.pth')
+        
+    torch.save(model.state_dict(), f'{path}/model.pth')
+    
+    return model
+
 
 def train_model_var(model_var, dataloader, back_coeff, num_epoch=301,lr=1e-3,path='models/GMM',decay_steps = 100):
     if not os.path.exists(path):

@@ -60,7 +60,7 @@ def remove_mean(samples, n_particles, n_dimensions):
         samples = samples.reshape(*shape)
     return samples
 
-def modify_samples_torch_batched_K(x, mean=0.0, std=1.0, K=1):
+def modify_samples_torch_batched_K(x, mean=0.0, std=1.0, K=1,eps_type = 'Gaussian'):
     """
     For each sample in the tensor x, randomly pick K dimensions and change the coordinates of those dimensions
     to Gaussian random variables with the specified mean and standard deviation, using PyTorch,
@@ -75,13 +75,10 @@ def modify_samples_torch_batched_K(x, mean=0.0, std=1.0, K=1):
     Returns:
     - A PyTorch tensor with modified samples.
     """
-    if len(x.shape) == 2:
-        M = 1
-        sampN, ndim = x.shape
-    else:
-        M, sampN, ndim = x.shape
-    x = x.reshape(M * sampN, ndim)  # (M*sampN, ndim)
-    nbatch = M * sampN
+    shape = x.shape
+    ndim = shape[-1]  
+    nbatch = x.size(0) if x.ndim == 2 else int(torch.prod(torch.tensor(shape[:-1])))
+    x = x.reshape(nbatch, ndim)
 
     if isinstance(K, int):
         K = torch.ones(x.size(0), device=x.device, dtype=torch.long) * K
@@ -96,13 +93,64 @@ def modify_samples_torch_batched_K(x, mean=0.0, std=1.0, K=1):
     random_dims_mask = sorted_indices < K_matrix  # Use sorted indices 
 
     # Random Gaussian values for modification
-    random_values = torch.normal(mean, std, (nbatch, ndim), device=x.device)
-    
+    if eps_type == 'Gaussian':
+        random_values = torch.normal(mean, std, (nbatch, ndim), device=x.device)
+    elif eps_type == 'Rademacher':
+        random_values = torch.randint(0, 2, (nbatch, ndim), device=x.device, dtype=torch.float32) * 2 - 1
+    else:
+        raise ValueError("Invalid eps_type. Choose 'Gaussian' or 'Rademacher'.")
     # Modify only the selected dimensions
     x[random_dims_mask] = random_values[random_dims_mask]
-    if M != 1:
-        x = x.reshape(M, sampN, ndim)  # Reshape back to original dimensions
+    x = x.reshape(*shape)  # Reshape back to original dimensions
     return
+
+
+def modify_samples_torch_batched_K_rademacher(x, mean=0.0, std=1.0, K=1):
+    """
+    For each sample in tensor x, randomly pick K dimensions and replace the values
+    in those dimensions with Rademacher random variables (+1 or -1).
+
+    Parameters:
+    - x: A PyTorch tensor of shape (nbatch, ndim) or (M, nbatch, ndim).
+    - mean: Optional mean value (kept for interface consistency, not used).
+    - std: Optional scale factor (can be used to scale Rademacher values).
+    - K: Number of dimensions to modify, or a tensor of shape (nbatch,) specifying
+         how many dimensions to modify per sample.
+
+    Returns:
+    - Modified PyTorch tensor with the same shape as the input.
+    """
+    if len(x.shape) == 2:
+        M = 1
+        sampN, ndim = x.shape
+    else:
+        M, sampN, ndim = x.shape
+
+    x = x.reshape(M * sampN, ndim)  # Flatten batch dimensions
+    nbatch = M * sampN
+
+    if isinstance(K, int):
+        K = torch.ones(nbatch, device=x.device, dtype=torch.long) * K
+
+    # Random ranking for each dimension
+    rand_vals = torch.rand(nbatch, ndim, device=x.device)
+    sorted_indices = rand_vals.argsort(dim=1)
+
+    # Broadcast K values for mask creation
+    K_matrix = K.unsqueeze(1).expand(-1, ndim)
+    random_dims_mask = sorted_indices < K_matrix  # True for selected dimensions
+
+    # Generate Rademacher random values (+1 or -1)
+    random_values = torch.randint(0, 2, (nbatch, ndim), device=x.device, dtype=torch.float32) * 2 - 1
+    random_values = random_values
+
+    # Apply modifications
+    x[random_dims_mask] = random_values[random_dims_mask]
+
+    if M != 1:
+        x = x.reshape(M, sampN, ndim)  # Restore original shape
+
+    return x
 
 def generate_tsampling(epsilon, tmax, Nselected, rho):
     """
