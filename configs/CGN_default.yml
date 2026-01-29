@@ -26,7 +26,7 @@ dataset:
 
 Sampler:
   ode_steps: 20
-  tmax: 0.65
+  tmax: 0.75
   rho: 3
 
 MC:
@@ -37,15 +37,15 @@ MC:
   beta: 1.0
   
 SMC:
-  n_steps: 1000
+  n_steps: 600
   nmc: 2
   n_replicas: 2000
-  Kmax_x: 20
-  Kmax_eps: 20
-  Kmin_x: 1
-  Kmin_eps: 1
-  compress_exp_x: 0.001
-  compress_exp_eps: 0.001
+  Kmax_x: 200
+  Kmax_eps: 200
+  Kmin_x: 3
+  Kmin_eps: 3
+  compress_exp_x: 0.01
+  compress_exp_eps: 0.05
   ess_threshold: 0.95
   resample_method: kl_reshuffle
 
