@@ -108,18 +108,15 @@ def get_vjp_score_mnoise(func, t, xt, eps, batch_size=500):
         score_chunk, vjp_fun = vjp(partial(func, t), xt_chunk)
         x_grad_chunk, = vmap(vjp_fun)(eps_chunk)
 
-        # 累加 Hutchinson 估计
         estimator.append(torch.sum(eps_chunk * x_grad_chunk, dim=-1))
 
-        # 如果你需要返回 scores，可以先存一个小列表，或者只返回最后均值
         scores_list.append(score_chunk.detach())
 
-        # 清理显存
         del xt_chunk, eps_chunk, x_grad_chunk, vjp_fun
         torch.cuda.empty_cache()
 
     estimator = torch.cat(estimator, dim=1).mean(dim=0)
-    print("estimator shape:", estimator.shape)
+    #print("estimator shape:", estimator.shape)
     scores = torch.cat(scores_list, dim=0)
     return scores, estimator
 from torch.func import jvp, vmap
